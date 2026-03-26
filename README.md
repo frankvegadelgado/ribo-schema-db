@@ -75,7 +75,7 @@ The schema is organized into four functional modules that map directly to busine
 
 ## 2. Module: Geography
 
-These three tables form a cascading geographic hierarchy used for address normalization across the entire platform. The structure follows the [kidino/SQL-Countries-States-Provinces](https://github.com/kidino/sqlcs) convention and mirrors Odoo's `res.country` and `res.country.state` models.
+These three tables form a cascading geographic hierarchy used for address normalization across the entire platform. The structure follows the [kidino/SQL-Countries-States-Provinces](https://github.com/kidino/SQL-Countries-States-Provinces) convention and mirrors Odoo's `res.country` and `res.country.state` models.
 
 ### `countries`
 
