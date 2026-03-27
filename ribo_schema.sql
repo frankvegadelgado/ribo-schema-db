@@ -66,11 +66,15 @@ CREATE TABLE IF NOT EXISTS kyc_statuses (
 );
 
 -- Seed the standard KYC statuses.
+-- Odoo "Estado" field mapping (res.partner export):
+--   'Borrador'  → pending      (default on creation, no review started)
+--   'Revisión'  → under_review (agent is actively reviewing documents)
+--   'Aprobado'  → approved     (identity verified, eligible for credit)
 INSERT INTO kyc_statuses (code, label, is_terminal) VALUES
-    ('pending',      'Pending',        FALSE),
+    ('pending',      'Pending',        FALSE),   -- Odoo: Borrador
     ('in_progress',  'In Progress',    FALSE),
-    ('under_review', 'Under Review',   FALSE),
-    ('approved',     'Approved',       TRUE),
+    ('under_review', 'Under Review',   FALSE),   -- Odoo: Revisión
+    ('approved',     'Approved',       TRUE),    -- Odoo: Aprobado
     ('rejected',     'Rejected',       TRUE),
     ('expired',      'Expired',        TRUE),
     ('suspended',    'Suspended',      FALSE);
@@ -81,6 +85,37 @@ INSERT INTO kyc_statuses (code, label, is_terminal) VALUES
 -- Represents natural or legal persons that operate as clients in RIBO.
 -- Field naming aligned with Odoo's res.partner model for easy integration.
 -- =============================================================================
+
+-- =============================================================================
+-- CLIENT TIERS
+-- Risk / commercial segmentation applied to each client by RIBO's credit team.
+-- Sourced from the Odoo res.partner field "Tipo de cliente".
+-- Kept as a nomenclator so new tiers can be added without schema changes.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS client_tiers (
+    tier_id         TINYINT UNSIGNED    NOT NULL AUTO_INCREMENT,
+    code            VARCHAR(30)         NOT NULL,   -- Machine key  e.g. 'classic', 'lista_negra'
+    label           VARCHAR(60)         NOT NULL,   -- Display name e.g. 'Classic'
+    description     TEXT                DEFAULT NULL,
+    -- Credit policy flags derived from tier
+    credit_eligible BOOLEAN             NOT NULL DEFAULT TRUE,
+    -- FALSE for tiers that are blocked from receiving new credit (e.g. lista_negativa)
+    sort_order      TINYINT UNSIGNED    NOT NULL DEFAULT 0,
+    is_active       BOOLEAN             NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (tier_id),
+    UNIQUE KEY uq_tier_code (code)
+);
+
+-- Tiers observed in the Odoo res.partner export (Tipo de cliente column).
+INSERT INTO client_tiers (code, label, description, credit_eligible, sort_order) VALUES
+    ('potencial',      'Potencial',      'Prospect with no credit history yet at RIBO; eligibility pending evaluation.',       TRUE,  1),
+    ('classic',        'Classic',        'Standard client with a normal credit profile and moderate limit.',                   TRUE,  2),
+    ('select',         'Select',         'Client with a good track record; higher credit limit than Classic.',                 TRUE,  3),
+    ('gold',           'Gold',           'Premium client with an excellent repayment history and the highest credit limit.',   TRUE,  4),
+    ('zona_gris',      'Zona Gris',      'Client under enhanced monitoring due to irregular payment behaviour.',               TRUE,  5),
+    ('lista_negativa', 'Lista Negativa', 'Blacklisted client; ineligible for new credit until the restriction is lifted.',    FALSE, 6);
+
 
 -- Document types accepted as identity proof (DNI, passport, RUC, CUIT, etc.).
 CREATE TABLE IF NOT EXISTS document_types (
@@ -137,6 +172,38 @@ CREATE TABLE IF NOT EXISTS clients (
     kyc_reviewed_by     INT UNSIGNED        DEFAULT NULL, -- FK → users (back-office agent)
     kyc_notes           TEXT                DEFAULT NULL,
 
+    -- Commercial tier (Odoo: Tipo de cliente)
+    tier_id             TINYINT UNSIGNED    DEFAULT NULL, -- FK → client_tiers; NULL = not yet classified
+
+    -- Credit capacity & balances  (Odoo res.partner computed fields)
+    -- All monetary values are in the currency specified by the credit product (default PEN).
+    credit_limit              DECIMAL(12,2)   DEFAULT NULL,
+    -- Maximum capital available to this client across all active credit products.
+    -- Corresponds to "Monto maximo de capital disponible" in Odoo.
+    -- NULL = not yet assessed; negative values indicate over-limit positions.
+
+    available_credit_slots    INT             NOT NULL DEFAULT -1,
+    -- Odoo computed field "Créditos activos disponibles".
+    -- -1 is the system sentinel meaning "not computed / unlimited slots".
+    -- When the field becomes meaningful, positive integers indicate remaining slots.
+
+    monthly_payment_capacity  DECIMAL(12,2)   DEFAULT NULL,
+    -- Maximum monthly instalment the client can absorb based on income assessment.
+    -- Corresponds to "Capacidad de pago mensual disponible" in Odoo.
+    -- NULL / -1 means not yet assessed.
+
+    current_balance           DECIMAL(12,2)   DEFAULT NULL,
+    -- Total outstanding principal across all active credits ("Saldo" in Odoo).
+    -- NULL when the client has no active credits.
+
+    overdue_balance           DECIMAL(12,2)   DEFAULT NULL,
+    -- Portion of current_balance that is past due ("Saldo vencido" in Odoo).
+    -- NULL when there is no overdue amount. A non-zero value drives risk alerts.
+
+    active_credits_count      TINYINT UNSIGNED NOT NULL DEFAULT 0,
+    -- Number of currently active credit agreements ("Creditos activos" in Odoo).
+    -- Observed values in production: 0, 1, 2.
+
     -- Odoo integration helpers
     odoo_partner_id     INT UNSIGNED        DEFAULT NULL, -- External Odoo res.partner ID
     ref                 VARCHAR(50)         DEFAULT NULL, -- Internal client reference / Odoo ref
@@ -152,11 +219,14 @@ CREATE TABLE IF NOT EXISTS clients (
     UNIQUE KEY uq_clients_odoo (odoo_partner_id),
     KEY idx_clients_kyc    (kyc_status_id),
     KEY idx_clients_country (country_id),
+    KEY idx_clients_tier   (tier_id),
 
     CONSTRAINT fk_clients_doc_type   FOREIGN KEY (document_type_id)
         REFERENCES document_types (document_type_id) ON UPDATE CASCADE ON DELETE RESTRICT,
     CONSTRAINT fk_clients_kyc_status FOREIGN KEY (kyc_status_id)
         REFERENCES kyc_statuses (kyc_status_id)      ON UPDATE CASCADE ON DELETE RESTRICT,
+    CONSTRAINT fk_clients_tier       FOREIGN KEY (tier_id)
+        REFERENCES client_tiers (tier_id)             ON UPDATE CASCADE ON DELETE SET NULL,
     CONSTRAINT fk_clients_nationality FOREIGN KEY (nationality_id)
         REFERENCES countries (country_id)             ON UPDATE CASCADE ON DELETE SET NULL,
     CONSTRAINT fk_clients_city       FOREIGN KEY (city_id)
