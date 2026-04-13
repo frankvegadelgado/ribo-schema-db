@@ -418,7 +418,7 @@ VALUES
 -- Catalogue of possible statuses for a credit request.
 CREATE TABLE IF NOT EXISTS credit_request_statuses (
     status_id   TINYINT UNSIGNED    NOT NULL AUTO_INCREMENT,
-    code        VARCHAR(30)         NOT NULL,   -- e.g. 'draft', 'submitted', 'approved'
+    code        VARCHAR(30)         NOT NULL,   -- e.g. 'cotizacion', 'en_revision', 'acreditado'
     label       VARCHAR(60)         NOT NULL,
     description TEXT                DEFAULT NULL,
     is_terminal BOOLEAN             NOT NULL DEFAULT FALSE, -- TRUE for final states
@@ -426,15 +426,108 @@ CREATE TABLE IF NOT EXISTS credit_request_statuses (
     UNIQUE KEY uq_credit_req_status_code (code)
 );
 
+-- Real Odoo Créditos status pipeline (13 statuses):
+--
+--   cotizacion ──► en_revision ──► en_aprobacion ──► acreditacion_pendiente
+--       └──────────────────────────────────────────────────► rechazado
+--
+--   acreditacion_pendiente ──► acreditado ──► pagado  ✅ (terminal)
+--       │
+--       ├──► reconfigurado   (restructured terms, stays active)
+--       ├──► renovado        (renewed for another cycle)
+--       ├──► pre_cancelado   (pending final cancellation)
+--       ├──► refinanciado    (replaced by a new credit) ✅ (terminal)
+--       ├──► judicial        (sent to legal / collections)
+--       ├──► incobrable      (written off / uncollectable) ✅ (terminal)
+--       └──► rechazado       (rejected) ✅ (terminal)
 INSERT INTO credit_request_statuses (code, label, description, is_terminal) VALUES
-    ('draft',       'Borrador',          'Solicitud iniciada pero no enviada',              FALSE),
-    ('submitted',   'Enviada',           'Solicitud recibida por RIBO vía web',             FALSE),
-    ('in_review',   'En Revisión',       'Equipo RIBO está evaluando la solicitud',         FALSE),
-    ('approved',    'Aprobada',          'Crédito aprobado; pendiente de desembolso',       TRUE),
-    ('disbursed',   'Desembolsado',      'Fondos transferidos a la cuenta del cliente',     TRUE),
-    ('rejected',    'Rechazada',         'Solicitud no cumple los criterios de aprobación', TRUE),
-    ('cancelled',   'Cancelada',         'Cancelada por el cliente o por expiración',       TRUE),
-    ('expired',     'Expirada',          'Sin respuesta del solicitante en el plazo dado',  TRUE);
+
+  -- ── Initial stage ──────────────────────────────────────────────────────
+  ('cotizacion',
+   'Cotización',
+   'Crédito recién creado o simulado; aún no enviado a revisión. '
+   'Equivale al estado "Borrador" en versiones anteriores del esquema. '
+   'El cliente o el agente puede editar todos los campos libremente.',
+   FALSE),
+
+  -- ── Review & approval pipeline ─────────────────────────────────────────
+  ('en_revision',
+   'En Revisión',
+   'El expediente fue enviado; un agente de crédito está verificando '
+   'documentación, historial crediticio y capacidad de pago. '
+   'Odoo campo Estado: "En revisión".',
+   FALSE),
+
+  ('en_aprobacion',
+   'En Aprobación',
+   'La revisión técnica pasó; el crédito está en mesa de aprobación '
+   '(comité o supervisor). Odoo campo Estado: "En aprobación".',
+   FALSE),
+
+  ('acreditacion_pendiente',
+   'Acreditación Pendiente',
+   'Crédito aprobado por el comité; pendiente de firma de contrato '
+   'y desembolso efectivo al cliente.',
+   FALSE),
+
+  -- ── Active & disbursed ─────────────────────────────────────────────────
+  ('acreditado',
+   'Acreditado',
+   'Contrato firmado y fondos desembolsados. El crédito está vigente '
+   'y generando cuotas. Corresponde a "Acreditado" en Odoo.',
+   FALSE),
+
+  -- ── Completed ─────────────────────────────────────────────────────────
+  ('pagado',
+   'Pagado',
+   'Todas las cuotas fueron cobradas. Crédito cancelado exitosamente. '
+   'Estado terminal — no se esperan más transacciones sobre este registro.',
+   TRUE),
+
+  -- ── Restructuring / lifecycle variants ────────────────────────────────
+  ('reconfigurado',
+   'Reconfigurado',
+   'Se modificaron las condiciones del crédito activo (monto, tasa, plazo) '
+   'sin cancelarlo. El crédito sigue vigente con los nuevos términos.',
+   FALSE),
+
+  ('renovado',
+   'Renovado',
+   'Crédito original finalizado y reemplazado por uno nuevo al mismo cliente '
+   'dentro del mismo ciclo comercial. Sigue activo bajo el nuevo número.',
+   FALSE),
+
+  ('pre_cancelado',
+   'Pre-Cancelado',
+   'Se inició el proceso de cancelación anticipada; pendiente de liquidación '
+   'del saldo total. Pasará a "Pagado" o "Rechazado" según el desenlace.',
+   FALSE),
+
+  -- ── Terminal — negative outcomes ───────────────────────────────────────
+  ('refinanciado',
+   'Refinanciado',
+   'El saldo fue refinanciado y absorbido por un nuevo crédito. '
+   'Este registro queda cerrado; el nuevo crédito lleva la deuda.',
+   TRUE),
+
+  ('judicial',
+   'Judicial',
+   'La deuda fue transferida al área legal / estudio jurídico para cobranza '
+   'coactiva. Puede recuperarse (→ acreditado o pagado) o declararse incobrable.',
+   FALSE),
+
+  ('incobrable',
+   'Incobrable',
+   'Deuda declarada irrecuperable y castigada contablemente. '
+   'Estado terminal — registro conservado para historial y reportes.',
+   TRUE),
+
+  ('rechazado',
+   'Rechazado',
+   'Solicitud denegada en cualquier etapa del proceso (revisión, aprobación '
+   'o acreditación). El cliente puede volver a postular. '
+   'Odoo acción: botón RECHAZAR.',
+   TRUE);
 
 
 -- Web credit requests submitted through ribo.pe.
@@ -473,7 +566,7 @@ CREATE TABLE IF NOT EXISTS credit_requests (
     disbursed_at        DATETIME            DEFAULT NULL,
 
     -- Request lifecycle
-    status_id           TINYINT UNSIGNED    NOT NULL DEFAULT 1,  -- starts as 'draft'
+    status_id           TINYINT UNSIGNED    NOT NULL DEFAULT 1,  -- starts as 'cotizacion'
     source_channel      VARCHAR(30)         NOT NULL DEFAULT 'web',
     -- e.g. 'web', 'typeform', 'whatsapp', 'referral'
     utm_source          VARCHAR(100)        DEFAULT NULL,  -- Marketing attribution
