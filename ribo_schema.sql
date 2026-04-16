@@ -623,6 +623,96 @@ CREATE TABLE IF NOT EXISTS credit_request_history (
 
 
 -- =============================================================================
+-- EMAIL TEMPLATES
+-- Stores reusable email templates (HTML and/or plain-text) used by RIBO's
+-- notification and marketing flows.
+-- Body content is kept as MEDIUMTEXT (HTML is text, not binary).
+-- Binary assets (images, logos) live in email_template_assets and are
+-- referenced via Content-ID (cid:) so the mailer can inline them at send time.
+-- =============================================================================
+
+CREATE TABLE IF NOT EXISTS email_templates (
+    template_id     INT UNSIGNED        NOT NULL AUTO_INCREMENT,
+
+    -- Identification
+    code            VARCHAR(60)         NOT NULL,
+    -- Stable machine-readable key used in application code (e.g. 'kyc_approved',
+    -- 'credit_disbursed'). Never changes after creation; safe to hard-code.
+    title           VARCHAR(120)        NOT NULL,
+    -- Human-readable display name shown in the back-office UI.
+    -- (e.g. 'KYC Aprobado — Notificación al cliente').
+
+    description     TEXT                DEFAULT NULL,
+    -- Optional internal note: purpose, audience, trigger conditions, etc.
+
+    -- Sender defaults (can be overridden at send time)
+    default_from    VARCHAR(254)        DEFAULT NULL, -- e.g. 'noreply@ribo.pe'
+    default_subject VARCHAR(255)        DEFAULT NULL, -- May contain variables: {{client_name}}
+
+    -- Body variants
+    body_html       MEDIUMTEXT          DEFAULT NULL,
+    -- Full HTML body. May reference assets via <img src="cid:{{asset_cid}}">.
+    -- Template variables use {{variable_name}} Mustache-style syntax.
+    body_text       MEDIUMTEXT          DEFAULT NULL,
+    -- Plain-text fallback for clients that do not render HTML.
+
+    -- Variable catalogue
+    variables       JSON                DEFAULT NULL,
+    -- Declares all variables this template expects.
+    -- e.g. ["client_name", "loan_amount", "due_date"]
+    -- Used by the mailer to validate the context before rendering.
+
+    -- Lifecycle
+    is_active       BOOLEAN             NOT NULL DEFAULT TRUE,
+    created_by      INT UNSIGNED        DEFAULT NULL, -- FK → users
+    created_at      DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP
+                                                    ON UPDATE CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (template_id),
+    UNIQUE KEY uq_email_template_code (code),
+    FULLTEXT KEY ft_email_template_body (body_html, body_text),
+    -- Enables variable discovery and content search across all templates.
+    KEY idx_email_template_active (is_active),
+
+    CONSTRAINT fk_email_template_creator FOREIGN KEY (created_by)
+        REFERENCES users (user_id) ON UPDATE CASCADE ON DELETE SET NULL
+);
+
+-- Binary assets (images, logos, banners) attached to an email template.
+-- Each row holds one file; the cid column is the Content-ID used in
+-- the HTML body as <img src="cid:header_logo">.
+CREATE TABLE IF NOT EXISTS email_template_assets (
+    asset_id        INT UNSIGNED        NOT NULL AUTO_INCREMENT,
+    template_id     INT UNSIGNED        NOT NULL,   -- FK → email_templates
+
+    -- Reference
+    cid             VARCHAR(100)        NOT NULL,
+    -- Content-ID referenced in the HTML body (without angle brackets).
+    -- Must be unique within the template. e.g. 'header_logo', 'footer_banner'.
+    filename        VARCHAR(255)        NOT NULL,   -- Original filename (e.g. 'logo.png')
+    mime_type       VARCHAR(100)        NOT NULL,   -- e.g. 'image/png', 'image/jpeg'
+
+    -- Binary content
+    data            MEDIUMBLOB          NOT NULL,
+    -- Raw file bytes. MEDIUMBLOB supports up to 16 MB per asset.
+
+    -- Audit
+    file_size       INT UNSIGNED        DEFAULT NULL, -- Byte length of data; denormalised for quick checks
+    created_at      DATETIME            NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    PRIMARY KEY (asset_id),
+    UNIQUE KEY uq_asset_template_cid (template_id, cid),
+    -- Enforces that cid values are unique per template.
+    KEY idx_asset_template (template_id),
+
+    CONSTRAINT fk_asset_template FOREIGN KEY (template_id)
+        REFERENCES email_templates (template_id) ON UPDATE CASCADE ON DELETE CASCADE
+    -- Cascade delete: removing a template also removes all its assets.
+);
+
+
+-- =============================================================================
 -- SESSION MANAGEMENT
 -- =============================================================================
 
