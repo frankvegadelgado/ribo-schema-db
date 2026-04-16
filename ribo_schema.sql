@@ -141,8 +141,9 @@ CREATE TABLE IF NOT EXISTS clients (
     client_id           INT UNSIGNED        NOT NULL AUTO_INCREMENT,
 
     -- Identity fields
-    document_type_id    TINYINT UNSIGNED    NOT NULL,
-    dni                 VARCHAR(30)         NOT NULL,   -- Identity document number (DNI / passport / RUC …)
+    document_type_id    TINYINT UNSIGNED    NULL
+                                                        COMMENT 'NULL cuando el documento de identidad no fue registrado en Odoo',
+    dni                 VARCHAR(30)         NULL        COMMENT 'NULL cuando el número de documento no está disponible',
     first_name          VARCHAR(100)        DEFAULT NULL, -- NULL for legal entities
     last_name           VARCHAR(100)        DEFAULT NULL, -- NULL for legal entities
     company_name        VARCHAR(255)        DEFAULT NULL, -- NULL for natural persons
@@ -215,8 +216,8 @@ CREATE TABLE IF NOT EXISTS clients (
                                                         ON UPDATE CURRENT_TIMESTAMP,
 
     PRIMARY KEY (client_id),
-    UNIQUE KEY uq_clients_dni (document_type_id, dni),
     UNIQUE KEY uq_clients_odoo (odoo_partner_id),
+    KEY idx_clients_doc_type_id (document_type_id),
     KEY idx_clients_kyc    (kyc_status_id),
     KEY idx_clients_country (country_id),
     KEY idx_clients_tier   (tier_id),
